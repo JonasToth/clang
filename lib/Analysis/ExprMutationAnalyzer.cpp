@@ -392,6 +392,7 @@ const Stmt *ExprMutationAnalyzer::findFunctionArgMutation(const Expr *Exp) {
     if (const auto *T = ParmType->getAs<PackExpansionType>())
       ParmType = T->getPattern();
 
+    // TODO: Evaluate this one, as it might overwrite?
     // If param type is forwarding reference, follow into the function
     // definition and see whether the param is mutated inside.
     if (const auto *RefType = ParmType->getAs<RValueReferenceType>()) {
