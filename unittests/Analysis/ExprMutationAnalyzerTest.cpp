@@ -1106,4 +1106,26 @@ TEST(ExprMutationAnalyzerTest, UniquePtr) {
   EXPECT_THAT(mutatedBy(Results, AST.get()), ElementsAre("x->mf()"));
 }
 
+TEST(ExprMutationAnalyzerTest, ReproduceFailure) {
+  const std::string Reproducer =
+      "template <class a> a&& forward(a & A) { return static_cast<a&&>(A); }"
+      "template <class _Fp> struct __bind {"
+      "_Fp d;"
+      "template <class e> __bind(_Fp f, e &&) : d(forward(f)) {}"
+      "};"
+      "template <class _Fp, class h> void bind(_Fp f, h && g) {"
+      "__bind<_Fp>(f, g);"
+      "}"
+      "template <typename i, typename j> void async(i f, j && g) {"
+      "bind(f, g);"
+      "}"
+      "void k() {"
+      "int x = 42;"
+      "async([] {}, l);"
+      "}";
+  auto AST = buildASTFromCode(Reproducer);
+  auto Results =
+      match(withEnclosingCompound(declRefTo("x")), AST->getASTContext());
+  // EXPECT_THAT(mutatedBy(Results, AST.get()), ElementsAre("* x = 10"));
+}
 } // namespace clang
