@@ -1106,7 +1106,7 @@ TEST(ExprMutationAnalyzerTest, UniquePtr) {
   EXPECT_THAT(mutatedBy(Results, AST.get()), ElementsAre("x->mf()"));
 }
 
-TEST(ExprMutationAnalyzerTest, ReproduceFailure) {
+TEST(ExprMutationAnalyzerTest, ReproduceFailure11) {
   const std::string Reproducer =
       "namespace std {"
       "template <class a> a&& forward(a & A) { return static_cast<a&&>(A); }"
@@ -1125,9 +1125,9 @@ TEST(ExprMutationAnalyzerTest, ReproduceFailure) {
       "int x = 42;"
       "std::async([] {}, x);"
       "}";
-  auto AST = buildASTFromCode(Reproducer);
-  auto Results =
-      match(withEnclosingCompound(declRefTo("x")), AST->getASTContext());
-  EXPECT_FALSE(isMutated(Results, AST.get()));
+  auto AST11 = buildASTFromCodeWithArgs(Reproducer, {"-std=c++11"});
+  auto Results11 =
+      match(withEnclosingCompound(declRefTo("x")), AST11->getASTContext());
+  EXPECT_FALSE(isMutated(Results11, AST11.get()));
 }
 } // namespace clang
