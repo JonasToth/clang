@@ -1108,7 +1108,7 @@ TEST(ExprMutationAnalyzerTest, UniquePtr) {
 
 TEST(ExprMutationAnalyzerTest, ReproduceFailure) {
   const std::string Reproducer =
-      "namespace std {
+      "namespace std {"
       "template <class a> a&& forward(a & A) { return static_cast<a&&>(A); }"
       "template <class _Fp> struct __bind {"
       "_Fp d;"
