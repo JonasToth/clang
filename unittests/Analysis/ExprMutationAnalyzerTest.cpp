@@ -1123,11 +1123,11 @@ TEST(ExprMutationAnalyzerTest, ReproduceFailure) {
       "} // namespace std"
       "void k() {"
       "int x = 42;"
-      "std::async([] {}, l);"
+      "std::async([] {}, x);"
       "}";
   auto AST = buildASTFromCode(Reproducer);
   auto Results =
       match(withEnclosingCompound(declRefTo("x")), AST->getASTContext());
-  // EXPECT_THAT(mutatedBy(Results, AST.get()), ElementsAre("* x = 10"));
+  EXPECT_FALSE(isMutated(Results, AST.get()));
 }
 } // namespace clang
