@@ -1108,6 +1108,7 @@ TEST(ExprMutationAnalyzerTest, UniquePtr) {
 
 TEST(ExprMutationAnalyzerTest, ReproduceFailure) {
   const std::string Reproducer =
+      "namespace std {
       "template <class a> a&& forward(a & A) { return static_cast<a&&>(A); }"
       "template <class _Fp> struct __bind {"
       "_Fp d;"
@@ -1119,9 +1120,10 @@ TEST(ExprMutationAnalyzerTest, ReproduceFailure) {
       "template <typename i, typename j> void async(i f, j && g) {"
       "bind(f, g);"
       "}"
+      "} // namespace std"
       "void k() {"
       "int x = 42;"
-      "async([] {}, l);"
+      "std::async([] {}, l);"
       "}";
   auto AST = buildASTFromCode(Reproducer);
   auto Results =
