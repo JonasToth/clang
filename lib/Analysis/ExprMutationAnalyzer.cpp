@@ -290,6 +290,12 @@ const Stmt *ExprMutationAnalyzer::findDirectMutation(const Expr *Exp) {
   };
 
   llvm::dbgs() << "Match\n";
+  llvm::dbgs() << "MatchContext: " << &Context << "\n";
+  llvm::dbgs() << "MatchContextScope: \n";
+  auto Scope = Context.getTraversalScope();
+  for (auto* D: Scope)
+      llvm::dbgs() << "Scope In Decl: " << D << "\n";
+
   const auto Matches = match(
       findAll(stmt(anyOf(AsAssignmentLhs(), AsIncDecOperand(), AsNonConstThis(),
                          AsAmpersandOperand(), AsPointerFromArrayDecay(),

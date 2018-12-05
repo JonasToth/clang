@@ -25,6 +25,10 @@ class ExprMutationAnalyzer {
 public:
   ExprMutationAnalyzer(const Stmt &Stm, ASTContext &Context)
       : Stm(Stm), Context(Context) {
+  llvm::dbgs() << "Neuer Mutzer Scope: \n";
+  auto Scope = Context.getTraversalScope();
+  for (auto* D: Scope)
+      llvm::dbgs() << "Scope In Decl: " << D << "\n";
           llvm::dbgs() << "Neuer Mutzer\n";
       }
 

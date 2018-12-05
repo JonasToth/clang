@@ -669,6 +669,8 @@ private:
                                     BoundNodesTreeBuilder *Builder,
                                     AncestorMatchMode MatchMode) {
     const auto &Parents = ActiveASTContext->getParents(Node);
+    llvm::dbgs() << "ActiveContext: " << ActiveASTContext << "\n";
+    llvm::dbgs() << "ActiveContext->TraversalScope: " << ActiveASTContext->getTraversalScope()[0] << "\n";
     llvm::dbgs() << "Node: " << &Node << "\n";
     llvm::dbgs() << Node.getNodeKind().asStringRef().str() << "\n";
     if (Parents.empty()) {
@@ -678,6 +680,7 @@ private:
       //  c) there is a bug in the AST, and the node is not reachable
       // Usually the traversal scope is the whole AST, which precludes b.
       // Bugs are common enough that it's worthwhile asserting when we can.
+#if 0
       assert((Node.get<TranslationUnitDecl>() ||
               /* Traversal scope is limited if none of the bounds are the TU */
               llvm::none_of(ActiveASTContext->getTraversalScope(),
@@ -687,6 +690,7 @@ private:
                               return D->getKind() == Decl::TranslationUnit;
                             })) &&
              "Found node that is not in the complete parent map!");
+#endif
       return false;
     }
     if (Parents.size() == 1) {
