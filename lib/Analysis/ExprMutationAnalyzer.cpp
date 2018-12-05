@@ -84,6 +84,7 @@ const Stmt *tryEachMatch(ArrayRef<ast_matchers::BoundNodes> Matches,
 } // namespace
 
 const Stmt *ExprMutationAnalyzer::findMutation(const Expr *Exp) {
+  llvm::dbgs() << "Next Expr mutation\n";
   return findMutationMemoized(Exp,
                               {&ExprMutationAnalyzer::findDirectMutation,
                                &ExprMutationAnalyzer::findMemberMutation,
@@ -193,46 +194,61 @@ const Stmt *ExprMutationAnalyzer::findDeclPointeeMutation(
 
 const Stmt *ExprMutationAnalyzer::findDirectMutation(const Expr *Exp) {
   // LHS of any assignment operators.
-  const auto AsAssignmentLhs =
-      binaryOperator(isAssignmentOperator(), hasLHS(equalsNode(Exp)));
+  const auto AsAssignmentLhs = [&Exp]() {
+    return binaryOperator(isAssignmentOperator(), hasLHS(equalsNode(Exp)));
+  };
 
   // Operand of increment/decrement operators.
-  const auto AsIncDecOperand =
-      unaryOperator(anyOf(hasOperatorName("++"), hasOperatorName("--")),
-                    hasUnaryOperand(equalsNode(Exp)));
+  const auto AsIncDecOperand = [&Exp]() {
+      llvm::dbgs() << "AsIncDecOperand\n";
+    return unaryOperator(anyOf(hasOperatorName("++"), hasOperatorName("--")),
+                         hasUnaryOperand(equalsNode(Exp)));
+  };
 
   // Invoking non-const member function.
   // A member function is assumed to be non-const when it is unresolved.
   const auto NonConstMethod = cxxMethodDecl(unless(isConst()));
-  const auto AsNonConstThis =
-      expr(anyOf(cxxMemberCallExpr(callee(NonConstMethod), on(equalsNode(Exp))),
-                 cxxOperatorCallExpr(callee(NonConstMethod),
-                                     hasArgument(0, equalsNode(Exp))),
-                 callExpr(callee(expr(anyOf(
-                     unresolvedMemberExpr(hasObjectExpression(equalsNode(Exp))),
-                     cxxDependentScopeMemberExpr(
-                         hasObjectExpression(equalsNode(Exp)))))))));
+  const auto AsNonConstThis = [&]() {
+      llvm::dbgs() << "AsNonConstThis\n";
+    return expr(
+        anyOf(cxxMemberCallExpr(callee(NonConstMethod), on(equalsNode(Exp))),
+              cxxOperatorCallExpr(callee(NonConstMethod),
+                                  hasArgument(0, equalsNode(Exp))),
+              callExpr(callee(expr(anyOf(
+                  unresolvedMemberExpr(hasObjectExpression(equalsNode(Exp))),
+                  cxxDependentScopeMemberExpr(
+                      hasObjectExpression(equalsNode(Exp)))))))));
+  };
 
   // Taking address of 'Exp'.
   // We're assuming 'Exp' is mutated as soon as its address is taken, though in
   // theory we can follow the pointer and see whether it escaped `Stm` or is
   // dereferenced and then mutated. This is left for future improvements.
-  const auto AsAmpersandOperand =
-      unaryOperator(hasOperatorName("&"),
-                    // A NoOp implicit cast is adding const.
-                    unless(hasParent(implicitCastExpr(hasCastKind(CK_NoOp)))),
-                    hasUnaryOperand(equalsNode(Exp)));
-  const auto AsPointerFromArrayDecay =
-      castExpr(hasCastKind(CK_ArrayToPointerDecay),
-               unless(hasParent(arraySubscriptExpr())), has(equalsNode(Exp)));
+  const auto AsAmpersandOperand = [&Exp]() {
+      llvm::dbgs() << "AsAmpersandOperand\n";
+    return unaryOperator(
+        hasOperatorName("&"),
+        // A NoOp implicit cast is adding const.
+        unless(hasParent(implicitCastExpr(hasCastKind(CK_NoOp)))),
+        hasUnaryOperand(equalsNode(Exp)));
+  };
+  const auto AsPointerFromArrayDecay = [&Exp]() {
+      llvm::dbgs() << "AsPointerFromArrayDecay\n";
+    return castExpr(hasCastKind(CK_ArrayToPointerDecay),
+                    unless(hasParent(arraySubscriptExpr())),
+                    has(equalsNode(Exp)));
+  };
   // Treat calling `operator->()` of move-only classes as taking address.
   // These are typically smart pointers with unique ownership so we treat
   // mutation of pointee as mutation of the smart pointer itself.
-  const auto AsOperatorArrowThis =
-      cxxOperatorCallExpr(hasOverloadedOperatorName("->"),
-                          callee(cxxMethodDecl(ofClass(isMoveOnly()),
-                                               returns(nonConstPointerType()))),
-                          argumentCountIs(1), hasArgument(0, equalsNode(Exp)));
+  const auto AsOperatorArrowThis = [&Exp]() {
+      llvm::dbgs() << "AsOperatorArrowThis\n";
+    return cxxOperatorCallExpr(
+        hasOverloadedOperatorName("->"),
+        callee(cxxMethodDecl(ofClass(isMoveOnly()),
+                             returns(nonConstPointerType()))),
+        argumentCountIs(1), hasArgument(0, equalsNode(Exp)));
+  };
 
   // Used as non-const-ref argument when calling a function.
   // An argument is assumed to be non-const-ref when the function is unresolved.
@@ -242,39 +258,51 @@ const Stmt *ExprMutationAnalyzer::findDirectMutation(const Expr *Exp) {
   const auto NonConstRefParam = forEachArgumentWithParam(
       equalsNode(Exp), parmVarDecl(hasType(nonConstReferenceType())));
   const auto NotInstantiated = unless(hasDeclaration(isInstantiated()));
-  const auto AsNonConstRefArg = anyOf(
-      callExpr(NonConstRefParam, NotInstantiated),
-      cxxConstructExpr(NonConstRefParam, NotInstantiated),
-      callExpr(callee(expr(anyOf(unresolvedLookupExpr(), unresolvedMemberExpr(),
-                                 cxxDependentScopeMemberExpr(),
-                                 hasType(templateTypeParmType())))),
-               hasAnyArgument(equalsNode(Exp))),
-      cxxUnresolvedConstructExpr(hasAnyArgument(equalsNode(Exp))));
+  const auto AsNonConstRefArg = [&]() {
+      llvm::dbgs() << "AsNonConstRefArg\n";
+    return anyOf(callExpr(NonConstRefParam, NotInstantiated),
+                 cxxConstructExpr(NonConstRefParam, NotInstantiated),
+                 callExpr(callee(expr(anyOf(unresolvedLookupExpr(),
+                                            unresolvedMemberExpr(),
+                                            cxxDependentScopeMemberExpr(),
+                                            hasType(templateTypeParmType())))),
+                          hasAnyArgument(equalsNode(Exp))),
+                 cxxUnresolvedConstructExpr(hasAnyArgument(equalsNode(Exp))));
+  };
 
   // Captured by a lambda by reference.
   // If we're initializing a capture with 'Exp' directly then we're initializing
   // a reference capture.
   // For value captures there will be an ImplicitCastExpr <LValueToRValue>.
-  const auto AsLambdaRefCaptureInit = lambdaExpr(hasCaptureInit(Exp));
+  const auto AsLambdaRefCaptureInit = [&Exp]() {
+      llvm::dbgs() << "AsLambdaRefCaptureInit\n";
+    return lambdaExpr(hasCaptureInit(Exp));
+  };
 
   // Returned as non-const-ref.
   // If we're returning 'Exp' directly then it's returned as non-const-ref.
   // For returning by value there will be an ImplicitCastExpr <LValueToRValue>.
   // For returning by const-ref there will be an ImplicitCastExpr <NoOp> (for
   // adding const.)
-  const auto AsNonConstRefReturn = returnStmt(hasReturnValue(equalsNode(Exp)));
+  const auto AsNonConstRefReturn = [&Exp]() {
+      llvm::dbgs() << "AsNonConstRefReturn\n";
+    return returnStmt(hasReturnValue(equalsNode(Exp)));
+  };
 
-  const auto Matches =
-      match(findAll(stmt(anyOf(AsAssignmentLhs, AsIncDecOperand, AsNonConstThis,
-                               AsAmpersandOperand, AsPointerFromArrayDecay,
-                               AsOperatorArrowThis, AsNonConstRefArg,
-                               AsLambdaRefCaptureInit, AsNonConstRefReturn))
-                        .bind("stmt")),
-            Stm, Context);
+  llvm::dbgs() << "Match\n";
+  const auto Matches = match(
+      findAll(stmt(anyOf(AsAssignmentLhs(), AsIncDecOperand(), AsNonConstThis(),
+                         AsAmpersandOperand(), AsPointerFromArrayDecay(),
+                         AsOperatorArrowThis(), AsNonConstRefArg(),
+                         AsLambdaRefCaptureInit(), AsNonConstRefReturn()))
+                  .bind("stmt")),
+      Stm, Context);
+  llvm::dbgs() << "End\n";
   return selectFirst<Stmt>("stmt", Matches);
 }
 
 const Stmt *ExprMutationAnalyzer::findMemberMutation(const Expr *Exp) {
+  llvm::dbgs() << "Member\n";
   // Check whether any member of 'Exp' is mutated.
   const auto MemberExprs =
       match(findAll(expr(anyOf(memberExpr(hasObjectExpression(equalsNode(Exp))),
@@ -286,6 +314,7 @@ const Stmt *ExprMutationAnalyzer::findMemberMutation(const Expr *Exp) {
 }
 
 const Stmt *ExprMutationAnalyzer::findArrayElementMutation(const Expr *Exp) {
+  llvm::dbgs() << "ArrayElement\n";
   // Check whether any element of an array is mutated.
   const auto SubscriptExprs = match(
       findAll(arraySubscriptExpr(hasBase(ignoringImpCasts(equalsNode(Exp))))
@@ -295,6 +324,7 @@ const Stmt *ExprMutationAnalyzer::findArrayElementMutation(const Expr *Exp) {
 }
 
 const Stmt *ExprMutationAnalyzer::findCastMutation(const Expr *Exp) {
+  llvm::dbgs() << "Cast\n";
   // If 'Exp' is casted to any non-const reference type, check the castExpr.
   const auto Casts =
       match(findAll(castExpr(hasSourceExpression(equalsNode(Exp)),
@@ -306,6 +336,9 @@ const Stmt *ExprMutationAnalyzer::findCastMutation(const Expr *Exp) {
             Stm, Context);
   if (const Stmt *S = findExprMutation(Casts))
     return S;
+
+  llvm::dbgs() << "Treat std::move/std::forward\n";
+
   // Treat std::{move,forward} as cast.
   const auto Calls =
       match(findAll(callExpr(callee(namedDecl(
@@ -313,10 +346,12 @@ const Stmt *ExprMutationAnalyzer::findCastMutation(const Expr *Exp) {
                              hasArgument(0, equalsNode(Exp)))
                         .bind("expr")),
             Stm, Context);
+  llvm::dbgs() << "Catched them all\n";
   return findExprMutation(Calls);
 }
 
 const Stmt *ExprMutationAnalyzer::findRangeLoopMutation(const Expr *Exp) {
+  llvm::dbgs() << "RangeLoopMutation\n";
   // If range for looping over 'Exp' with a non-const reference loop variable,
   // check all declRefExpr of the loop variable.
   const auto LoopVars =
@@ -329,6 +364,7 @@ const Stmt *ExprMutationAnalyzer::findRangeLoopMutation(const Expr *Exp) {
 }
 
 const Stmt *ExprMutationAnalyzer::findReferenceMutation(const Expr *Exp) {
+  llvm::dbgs() << "ReferenceMutation\n";
   // Follow non-const reference returned by `operator*()` of move-only classes.
   // These are typically smart pointers with unique ownership so we treat
   // mutation of pointee as mutation of the smart pointer itself.
@@ -363,6 +399,7 @@ const Stmt *ExprMutationAnalyzer::findReferenceMutation(const Expr *Exp) {
 }
 
 const Stmt *ExprMutationAnalyzer::findFunctionArgMutation(const Expr *Exp) {
+  llvm::dbgs() << "Here\n";
   const auto NonConstRefParam = forEachArgumentWithParam(
       equalsNode(Exp),
       parmVarDecl(hasType(nonConstReferenceType())).bind("parm"));
@@ -400,32 +437,51 @@ const Stmt *ExprMutationAnalyzer::findFunctionArgMutation(const Expr *Exp) {
           RefType->getPointeeType()->getAs<TemplateTypeParmType>()) {
         std::unique_ptr<FunctionParmMutationAnalyzer> &Analyzer =
             FuncParmAnalyzer[Func];
-        if (!Analyzer)
+        llvm::dbgs() << "Here: Forwarding\n";
+        if (!Analyzer) {
+          llvm::dbgs() << "New Analyzer\n";
           Analyzer.reset(new FunctionParmMutationAnalyzer(*Func, Context));
-        if (Analyzer->findMutation(Parm))
+        }
+        if (Analyzer->findMutation(Parm)) {
+          llvm::dbgs() << "Old Analyzer\n";
           return Exp;
+        }
+        llvm::dbgs() << "Forwarding: No Mutation\n";
         continue;
       }
     }
+    llvm::dbgs() << "Here: Not Forwarding\n";
     // Not forwarding reference.
     return Exp;
   }
+  llvm::dbgs() << "Here: Null\n";
   return nullptr;
 }
 
 FunctionParmMutationAnalyzer::FunctionParmMutationAnalyzer(
     const FunctionDecl &Func, ASTContext &Context)
     : BodyAnalyzer(*Func.getBody(), Context) {
+  llvm::dbgs() << "New Function Parm Mut\n";
   if (const auto *Ctor = dyn_cast<CXXConstructorDecl>(&Func)) {
+    llvm::dbgs() << "In Constructor\n";
     // CXXCtorInitializer might also mutate Param but they're not part of
     // function body, check them eagerly here since they're typically trivial.
     for (const CXXCtorInitializer *Init : Ctor->inits()) {
+      llvm::dbgs() << "In Initializer\n";
       ExprMutationAnalyzer InitAnalyzer(*Init->getInit(), Context);
+      llvm::dbgs() << "Maybe here?\n";
       for (const ParmVarDecl *Parm : Ctor->parameters()) {
-        if (Results.find(Parm) != Results.end())
+        llvm::dbgs() << "New Parm\n";
+        if (Results.find(Parm) != Results.end()) {
+          llvm::dbgs() << "Ney\n";
           continue;
-        if (const Stmt *S = InitAnalyzer.findMutation(Parm))
+        }
+        llvm::dbgs() << "The question is if Init mutates\n";
+        if (const Stmt *S = InitAnalyzer.findMutation(Parm)) {
+          llvm::dbgs() << "Mutation in Init\n";
           Results[Parm] = S;
+        }
+        llvm::dbgs() << "Noting for this parm\n";
       }
     }
   }

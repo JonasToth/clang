@@ -669,6 +669,8 @@ private:
                                     BoundNodesTreeBuilder *Builder,
                                     AncestorMatchMode MatchMode) {
     const auto &Parents = ActiveASTContext->getParents(Node);
+    llvm::dbgs() << "Node: " << &Node << "\n";
+    llvm::dbgs() << Node.getNodeKind().asStringRef().str() << "\n";
     if (Parents.empty()) {
       // Nodes may have no parents if:
       //  a) the node is the TranslationUnitDecl
@@ -680,6 +682,8 @@ private:
               /* Traversal scope is limited if none of the bounds are the TU */
               llvm::none_of(ActiveASTContext->getTraversalScope(),
                             [](Decl *D) {
+                                llvm::dbgs() << "D* = " << D << "\n";
+                                llvm::dbgs() << D->getKind() << "\n";
                               return D->getKind() == Decl::TranslationUnit;
                             })) &&
              "Found node that is not in the complete parent map!");

@@ -24,7 +24,9 @@ class FunctionParmMutationAnalyzer;
 class ExprMutationAnalyzer {
 public:
   ExprMutationAnalyzer(const Stmt &Stm, ASTContext &Context)
-      : Stm(Stm), Context(Context) {}
+      : Stm(Stm), Context(Context) {
+          llvm::dbgs() << "Neuer Mutzer\n";
+      }
 
   bool isMutated(const Expr *Exp) { return findMutation(Exp) != nullptr; }
   bool isMutated(const Decl *Dec) { return findMutation(Dec) != nullptr; }
