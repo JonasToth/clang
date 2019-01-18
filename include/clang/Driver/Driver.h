@@ -227,9 +227,6 @@ private:
   unsigned CheckInputsExist : 1;
 
 public:
-  /// Use lazy precompiled headers for PCH support.
-  unsigned CCCUsePCH : 1;
-
   /// Force clang to emit reproducer for driver invocation. This is enabled
   /// indirectly by setting FORCE_CLANG_DIAGNOSTICS_CRASH environment variable
   /// or when using the -gen-reproducer driver flag.
@@ -507,6 +504,10 @@ public:
   ///
   /// GCC goes to extra lengths here to be a bit more robust.
   std::string GetTemporaryPath(StringRef Prefix, StringRef Suffix) const;
+
+  /// GetTemporaryDirectory - Return the pathname of a temporary directory to
+  /// use as part of compilation; the directory will have the given prefix.
+  std::string GetTemporaryDirectory(StringRef Prefix) const;
 
   /// Return the pathname of the pch file in clang-cl mode.
   std::string GetClPchPath(Compilation &C, StringRef BaseName) const;

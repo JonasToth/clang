@@ -29,6 +29,7 @@
 #include "ToolChains/Hurd.h"
 #include "ToolChains/Lanai.h"
 #include "ToolChains/Linux.h"
+#include "ToolChains/MSP430.h"
 #include "ToolChains/MSVC.h"
 #include "ToolChains/MinGW.h"
 #include "ToolChains/Minix.h"
@@ -101,8 +102,7 @@ Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
       CCPrintOptions(false), CCPrintHeaders(false), CCLogDiagnostics(false),
       CCGenDiagnostics(false), TargetTriple(TargetTriple),
       CCCGenericGCCName(""), Saver(Alloc), CheckInputsExist(true),
-      CCCUsePCH(true), GenReproducer(false),
-      SuppressMissingInputWarning(false) {
+      GenReproducer(false), SuppressMissingInputWarning(false) {
 
   // Provide a sane fallback if no VFS is specified.
   if (!this->VFS)
@@ -304,6 +304,7 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
   DerivedArgList *DAL = new DerivedArgList(Args);
 
   bool HasNostdlib = Args.hasArg(options::OPT_nostdlib);
+  bool HasNostdlibxx = Args.hasArg(options::OPT_nostdlibxx);
   bool HasNodefaultlib = Args.hasArg(options::OPT_nodefaultlibs);
   for (Arg *A : Args) {
     // Unfortunately, we have to parse some forwarding options (-Xassembler,
@@ -348,7 +349,8 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
       StringRef Value = A->getValue();
 
       // Rewrite unless -nostdlib is present.
-      if (!HasNostdlib && !HasNodefaultlib && Value == "stdc++") {
+      if (!HasNostdlib && !HasNodefaultlib && !HasNostdlibxx &&
+          Value == "stdc++") {
         DAL->AddFlagArg(A, Opts->getOption(options::OPT_Z_reserved_lib_stdcxx));
         continue;
       }
@@ -1007,8 +1009,6 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   CCCPrintBindings = Args.hasArg(options::OPT_ccc_print_bindings);
   if (const Arg *A = Args.getLastArg(options::OPT_ccc_gcc_name))
     CCCGenericGCCName = A->getValue();
-  CCCUsePCH =
-      Args.hasFlag(options::OPT_ccc_pch_is_pch, options::OPT_ccc_pch_is_pth);
   GenReproducer = Args.hasFlag(options::OPT_gen_reproducer,
                                options::OPT_fno_crash_diagnostics,
                                !!::getenv("FORCE_CLANG_DIAGNOSTICS_CRASH"));
@@ -2058,7 +2058,8 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
           Ty = types::TY_C;
         } else {
           // Otherwise lookup by extension.
-          // Fallback is C if invoked as C preprocessor or Object otherwise.
+          // Fallback is C if invoked as C preprocessor, C++ if invoked with
+          // clang-cl /E, or Object otherwise.
           // We use a host hook here because Darwin at least has its own
           // idea of what .s is.
           if (const char *Ext = strrchr(Value, '.'))
@@ -2067,6 +2068,8 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
           if (Ty == types::TY_INVALID) {
             if (CCCIsCPP())
               Ty = types::TY_C;
+            else if (IsCLMode() && Args.hasArgNoClaim(options::OPT_E))
+              Ty = types::TY_CXX;
             else
               Ty = types::TY_Object;
           }
@@ -2321,6 +2324,18 @@ class OffloadingActionBuilder final {
       // If this is an unbundling action use it as is for each CUDA toolchain.
       if (auto *UA = dyn_cast<OffloadUnbundlingJobAction>(HostAction)) {
         CudaDeviceActions.clear();
+        auto *IA = cast<InputAction>(UA->getInputs().back());
+        std::string FileName = IA->getInputArg().getAsString(Args);
+        // Check if the type of the file is the same as the action. Do not
+        // unbundle it if it is not. Do not unbundle .so files, for example,
+        // which are not object files.
+        if (IA->getType() == types::TY_Object &&
+            (!llvm::sys::path::has_extension(FileName) ||
+             types::lookupTypeForExtension(
+                 llvm::sys::path::extension(FileName).drop_front()) !=
+                 types::TY_Object))
+          return ABRT_Inactive;
+
         for (auto Arch : GpuArchList) {
           CudaDeviceActions.push_back(UA);
           UA->registerDependentActionInfo(ToolChains[0], CudaArchToString(Arch),
@@ -4357,7 +4372,7 @@ const char *Driver::GetNamedOutputPath(Compilation &C, const JobAction &JA,
 }
 
 std::string Driver::GetFilePath(StringRef Name, const ToolChain &TC) const {
-  // Seach for Name in a list of paths.
+  // Search for Name in a list of paths.
   auto SearchPaths = [&](const llvm::SmallVectorImpl<std::string> &P)
       -> llvm::Optional<std::string> {
     // Respect a limited subset of the '-Bprefix' functionality in GCC by
@@ -4456,6 +4471,17 @@ std::string Driver::GetProgramPath(StringRef Name, const ToolChain &TC) const {
 std::string Driver::GetTemporaryPath(StringRef Prefix, StringRef Suffix) const {
   SmallString<128> Path;
   std::error_code EC = llvm::sys::fs::createTemporaryFile(Prefix, Suffix, Path);
+  if (EC) {
+    Diag(clang::diag::err_unable_to_make_temp) << EC.message();
+    return "";
+  }
+
+  return Path.str();
+}
+
+std::string Driver::GetTemporaryDirectory(StringRef Prefix) const {
+  SmallString<128> Path;
+  std::error_code EC = llvm::sys::fs::createUniqueDirectory(Prefix, Path);
   if (EC) {
     Diag(clang::diag::err_unable_to_make_temp) << EC.message();
     return "";
@@ -4611,6 +4637,10 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         break;
       case llvm::Triple::avr:
         TC = llvm::make_unique<toolchains::AVRToolChain>(*this, Target, Args);
+        break;
+      case llvm::Triple::msp430:
+        TC =
+            llvm::make_unique<toolchains::MSP430ToolChain>(*this, Target, Args);
         break;
       case llvm::Triple::riscv32:
       case llvm::Triple::riscv64:

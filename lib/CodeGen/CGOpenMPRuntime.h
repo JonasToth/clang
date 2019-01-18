@@ -15,6 +15,7 @@
 #define LLVM_CLANG_LIB_CODEGEN_CGOPENMPRUNTIME_H
 
 #include "CGValue.h"
+#include "clang/AST/DeclOpenMP.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/SourceLocation.h"
@@ -289,6 +290,10 @@ protected:
   /// Returns additional flags that can be stored in reserved_2 field of the
   /// default location.
   virtual unsigned getDefaultLocationReserved2Flags() const { return 0; }
+
+  /// Returns default flags for the barriers depending on the directive, for
+  /// which this barier is going to be emitted.
+  static unsigned getDefaultFlagsForBarriers(OpenMPDirectiveKind Kind);
 
   /// Get the LLVM type for the critical name.
   llvm::ArrayType *getKmpCriticalNameTy() const {return KmpCriticalNameTy;}
@@ -1363,6 +1368,15 @@ public:
                                           bool IsOffloadEntry,
                                           const RegionCodeGenTy &CodeGen);
 
+  /// Emit code that pushes the trip count of loops associated with constructs
+  /// 'target teams distribute' and 'teams distribute parallel for'.
+  /// \param SizeEmitter Emits the int64 value for the number of iterations of
+  /// the associated loop.
+  virtual void emitTargetNumIterationsCall(
+      CodeGenFunction &CGF, const OMPExecutableDirective &D, const Expr *Device,
+      const llvm::function_ref<llvm::Value *(
+          CodeGenFunction &CGF, const OMPLoopDirective &D)> &SizeEmitter);
+
   /// Emit the target offloading code associated with \a D. The emitted
   /// code attempts offloading the execution to the device, an the event of
   /// a failure it executes the host version outlined in \a OutlinedFn.
@@ -1553,7 +1567,7 @@ public:
   virtual Address getAddressOfLocalVariable(CodeGenFunction &CGF,
                                             const VarDecl *VD);
 
-  /// Marks the declaration as alread emitted for the device code and returns
+  /// Marks the declaration as already emitted for the device code and returns
   /// true, if it was marked already, and false, otherwise.
   bool markAsGlobalTarget(GlobalDecl GD);
 

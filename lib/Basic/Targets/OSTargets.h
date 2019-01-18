@@ -133,6 +133,15 @@ public:
   /// is very similar to ELF's "protected";  Darwin requires a "weak"
   /// attribute on declarations that can be dynamically replaced.
   bool hasProtectedVisibility() const override { return false; }
+
+  TargetInfo::IntType getLeastIntTypeByWidth(unsigned BitWidth,
+                                             bool IsSigned) const final {
+    // Darwin uses `long long` for `int_least64_t` and `int_fast64_t`.
+    return BitWidth == 64
+               ? (IsSigned ? TargetInfo::SignedLongLong
+                           : TargetInfo::UnsignedLongLong)
+               : TargetInfo::getLeastIntTypeByWidth(BitWidth, IsSigned);
+  }
 };
 
 // DragonFlyBSD Target
@@ -257,6 +266,8 @@ protected:
     Builder.defineMacro("__HAIKU__");
     Builder.defineMacro("__ELF__");
     DefineStd(Builder, "unix", Opts);
+    if (this->HasFloat128) 
+      Builder.defineMacro("__FLOAT128__");
   }
 
 public:
@@ -267,6 +278,14 @@ public:
     this->PtrDiffType = TargetInfo::SignedLong;
     this->ProcessIDType = TargetInfo::SignedLong;
     this->TLSSupported = false;
+    switch (Triple.getArch()) {
+    default:
+      break;
+    case llvm::Triple::x86:
+    case llvm::Triple::x86_64:
+      this->HasFloat128 = true;
+      break;
+    }
   }
 };
 
@@ -326,7 +345,6 @@ protected:
     // Linux defines; list based off of gcc output
     DefineStd(Builder, "unix", Opts);
     DefineStd(Builder, "linux", Opts);
-    Builder.defineMacro("__gnu_linux__");
     Builder.defineMacro("__ELF__");
     if (Triple.isAndroid()) {
       Builder.defineMacro("__ANDROID__", "1");
@@ -336,6 +354,8 @@ protected:
       this->PlatformMinVersion = VersionTuple(Maj, Min, Rev);
       if (Maj)
         Builder.defineMacro("__ANDROID_API__", Twine(Maj));
+    } else {
+        Builder.defineMacro("__gnu_linux__");
     }
     if (Opts.POSIXThreads)
       Builder.defineMacro("_REENTRANT");
@@ -364,7 +384,6 @@ public:
       break;
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
-    case llvm::Triple::systemz:
       this->HasFloat128 = true;
       break;
     }

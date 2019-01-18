@@ -4669,11 +4669,22 @@ static void TryReferenceInitializationCore(Sema &S,
     //   If the converted initializer is a prvalue, its type T4 is adjusted
     //   to type "cv1 T4" and the temporary materialization conversion is
     //   applied.
+    // Postpone address space conversions to after the temporary materialization
+    // conversion to allow creating temporaries in the alloca address space.
+    auto AS1 = T1Quals.getAddressSpace();
+    auto AS2 = T2Quals.getAddressSpace();
+    T1Quals.removeAddressSpace();
+    T2Quals.removeAddressSpace();
     QualType cv1T4 = S.Context.getQualifiedType(cv2T2, T1Quals);
     if (T1Quals != T2Quals)
       Sequence.AddQualificationConversionStep(cv1T4, ValueKind);
     Sequence.AddReferenceBindingStep(cv1T4, ValueKind == VK_RValue);
     ValueKind = isLValueRef ? VK_LValue : VK_XValue;
+    if (AS1 != AS2) {
+      T1Quals.addAddressSpace(AS1);
+      QualType cv1AST4 = S.Context.getQualifiedType(cv2T2, T1Quals);
+      Sequence.AddQualificationConversionStep(cv1AST4, ValueKind);
+    }
 
     //   In any case, the reference is bound to the resulting glvalue (or to
     //   an appropriate base class subobject).
@@ -6199,7 +6210,7 @@ PerformConstructorInitialization(Sema &S,
     }
     S.MarkFunctionReferenced(Loc, Constructor);
 
-    CurInit = new (S.Context) CXXTemporaryObjectExpr(
+    CurInit = CXXTemporaryObjectExpr::Create(
         S.Context, Constructor,
         Entity.getType().getNonLValueExprType(S.Context), TSInfo,
         ConstructorArgs, ParenOrBraceRange, HadMultipleCandidates,
@@ -7687,6 +7698,18 @@ ExprResult InitializationSequence::Perform(Sema &S,
 
     case SK_ConversionSequence:
     case SK_ConversionSequenceNoNarrowing: {
+      if (const auto *FromPtrType =
+              CurInit.get()->getType()->getAs<PointerType>()) {
+        if (const auto *ToPtrType = Step->Type->getAs<PointerType>()) {
+          if (FromPtrType->getPointeeType()->hasAttr(attr::NoDeref) &&
+              !ToPtrType->getPointeeType()->hasAttr(attr::NoDeref)) {
+            S.Diag(CurInit.get()->getExprLoc(),
+                   diag::warn_noderef_to_dereferenceable_pointer)
+                << CurInit.get()->getSourceRange();
+          }
+        }
+      }
+
       Sema::CheckedConversionKind CCK
         = Kind.isCStyleCast()? Sema::CCK_CStyleCast
         : Kind.isFunctionalCast()? Sema::CCK_FunctionalCast
@@ -7853,6 +7876,7 @@ ExprResult InitializationSequence::Perform(Sema &S,
 
     case SK_CAssignment: {
       QualType SourceType = CurInit.get()->getType();
+
       // Save off the initial CurInit in case we need to emit a diagnostic
       ExprResult InitialCurInit = CurInit;
       ExprResult Result = CurInit;
@@ -7988,7 +8012,7 @@ ExprResult InitializationSequence::Perform(Sema &S,
     }
 
     case SK_OCLSamplerInit: {
-      // Sampler initialzation have 5 cases:
+      // Sampler initialization have 5 cases:
       //   1. function argument passing
       //      1a. argument is a file-scope variable
       //      1b. argument is a function-scope variable

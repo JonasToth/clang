@@ -183,11 +183,15 @@ namespace {
     SmallVector<TypeAttrPair, 8> AttrsForTypes;
     bool AttrsForTypesSorted = true;
 
+    /// Flag to indicate we parsed a noderef attribute. This is used for
+    /// validating that noderef was used on a pointer or array.
+    bool parsedNoDeref;
+
   public:
     TypeProcessingState(Sema &sema, Declarator &declarator)
-      : sema(sema), declarator(declarator),
-        chunkIndex(declarator.getNumTypeObjects()),
-        trivial(true), hasSavedAttrs(false) {}
+        : sema(sema), declarator(declarator),
+          chunkIndex(declarator.getNumTypeObjects()), trivial(true),
+          hasSavedAttrs(false), parsedNoDeref(false) {}
 
     Sema &getSema() const {
       return sema;
@@ -277,6 +281,10 @@ namespace {
 
       llvm_unreachable("no Attr* for AttributedType*");
     }
+
+    void setParsedNoDeref(bool parsed) { parsedNoDeref = parsed; }
+
+    bool didParseNoDeref() const { return parsedNoDeref; }
 
     ~TypeProcessingState() {
       if (trivial) return;
@@ -716,12 +724,8 @@ static void maybeSynthesizeBlockSignature(TypeProcessingState &state,
       /*NumArgs=*/0,
       /*EllipsisLoc=*/NoLoc,
       /*RParenLoc=*/NoLoc,
-      /*TypeQuals=*/0,
       /*RefQualifierIsLvalueRef=*/true,
       /*RefQualifierLoc=*/NoLoc,
-      /*ConstQualifierLoc=*/NoLoc,
-      /*VolatileQualifierLoc=*/NoLoc,
-      /*RestrictQualifierLoc=*/NoLoc,
       /*MutableLoc=*/NoLoc, EST_None,
       /*ESpecRange=*/SourceRange(),
       /*Exceptions=*/nullptr,
@@ -729,8 +733,7 @@ static void maybeSynthesizeBlockSignature(TypeProcessingState &state,
       /*NumExceptions=*/0,
       /*NoexceptExpr=*/nullptr,
       /*ExceptionSpecTokens=*/nullptr,
-      /*DeclsInPrototype=*/None,
-      loc, loc, declarator));
+      /*DeclsInPrototype=*/None, loc, loc, declarator));
 
   // For consistency, make sure the state still has us as processing
   // the decl spec.
@@ -1865,8 +1868,7 @@ static QualType inferARCLifetimeForPointee(Sema &S, QualType type,
 }
 
 static std::string getFunctionQualifiersAsString(const FunctionProtoType *FnTy){
-  std::string Quals =
-    Qualifiers::fromCVRMask(FnTy->getTypeQuals()).getAsString();
+  std::string Quals = FnTy->getTypeQuals().getAsString();
 
   switch (FnTy->getRefQualifier()) {
   case RQ_None:
@@ -1908,7 +1910,7 @@ static bool checkQualifiedFunction(Sema &S, QualType T, SourceLocation Loc,
                                    QualifiedFunctionKind QFK) {
   // Does T refer to a function type with a cv-qualifier or a ref-qualifier?
   const FunctionProtoType *FPT = T->getAs<FunctionProtoType>();
-  if (!FPT || (FPT->getTypeQuals() == 0 && FPT->getRefQualifier() == RQ_None))
+  if (!FPT || (FPT->getTypeQuals().empty() && FPT->getRefQualifier() == RQ_None))
     return false;
 
   S.Diag(Loc, diag::err_compound_qualified_function_type)
@@ -3887,6 +3889,11 @@ static bool hasOuterPointerLikeChunk(const Declarator &D, unsigned endIndex) {
   return false;
 }
 
+static bool IsNoDerefableChunk(DeclaratorChunk Chunk) {
+  return (Chunk.Kind == DeclaratorChunk::Pointer ||
+          Chunk.Kind == DeclaratorChunk::Array);
+}
+
 template<typename AttrT>
 static AttrT *createSimpleAttr(ASTContext &Ctx, ParsedAttr &Attr) {
   Attr.setUsedAsTypeAttr();
@@ -3937,7 +3944,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
 
   // Does T refer to a function type with a cv-qualifier or a ref-qualifier?
   bool IsQualifiedFunction = T->isFunctionProtoType() &&
-      (T->castAs<FunctionProtoType>()->getTypeQuals() != 0 ||
+      (!T->castAs<FunctionProtoType>()->getTypeQuals().empty() ||
        T->castAs<FunctionProtoType>()->getRefQualifier() != RQ_None);
 
   // If T is 'decltype(auto)', the only declarators we can have are parens
@@ -4280,6 +4287,9 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
     }
   }
 
+  bool ExpectNoDerefChunk =
+      state.getCurrentAttributes().hasAttribute(ParsedAttr::AT_NoDeref);
+
   // Walk the DeclTypeInfo, building the recursive type as we go.
   // DeclTypeInfos are ordered from the identifier out, which is
   // opposite of what we want :).
@@ -4445,7 +4455,8 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       // does not have a K&R-style identifier list), then the arguments are part
       // of the type, otherwise the argument list is ().
       const DeclaratorChunk::FunctionTypeInfo &FTI = DeclType.Fun;
-      IsQualifiedFunction = FTI.TypeQuals || FTI.hasRefQualifier();
+      IsQualifiedFunction =
+          FTI.hasMethodTypeQualifiers() || FTI.hasRefQualifier();
 
       // Check for auto functions and trailing return type and adjust the
       // return type accordingly.
@@ -4683,7 +4694,9 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         EPI.ExtInfo = EI;
         EPI.Variadic = FTI.isVariadic;
         EPI.HasTrailingReturn = FTI.hasTrailingReturnType();
-        EPI.TypeQuals = FTI.TypeQuals;
+        EPI.TypeQuals.addCVRUQualifiers(
+            FTI.MethodQualifiers ? FTI.MethodQualifiers->getTypeQualifiers()
+                                 : 0);
         EPI.RefQualifier = !FTI.hasRefQualifier()? RQ_None
                     : FTI.RefQualifierIsLValueRef? RQ_LValue
                     : RQ_RValue;
@@ -4810,6 +4823,20 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
                                       Exceptions,
                                       EPI.ExceptionSpec);
 
+        const auto &Spec = D.getCXXScopeSpec();
+        // OpenCLCPlusPlus: A class member function has an address space.
+        if (state.getSema().getLangOpts().OpenCLCPlusPlus &&
+            ((!Spec.isEmpty() &&
+              Spec.getScopeRep()->getKind() == NestedNameSpecifier::TypeSpec) ||
+             state.getDeclarator().getContext() ==
+                 DeclaratorContext::MemberContext)) {
+          LangAS CurAS = EPI.TypeQuals.getAddressSpace();
+          // If a class member function's address space is not set, set it to
+          // __generic.
+          LangAS AS =
+              (CurAS == LangAS::Default ? LangAS::opencl_generic : CurAS);
+          EPI.TypeQuals.addAddressSpace(AS);
+        }
         T = Context.getFunctionType(T, ParamTys, EPI);
       }
       break;
@@ -4889,7 +4916,21 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
 
     // See if there are any attributes on this declarator chunk.
     processTypeAttrs(state, T, TAL_DeclChunk, DeclType.getAttrs());
+
+    if (DeclType.Kind != DeclaratorChunk::Paren) {
+      if (ExpectNoDerefChunk) {
+        if (!IsNoDerefableChunk(DeclType))
+          S.Diag(DeclType.Loc, diag::warn_noderef_on_non_pointer_or_array);
+        ExpectNoDerefChunk = false;
+      }
+
+      ExpectNoDerefChunk = state.didParseNoDeref();
+    }
   }
+
+  if (ExpectNoDerefChunk)
+    S.Diag(state.getDeclarator().getBeginLoc(),
+           diag::warn_noderef_on_non_pointer_or_array);
 
   // GNU warning -Wstrict-prototypes
   //   Warn if a function declaration is without a prototype.
@@ -4978,14 +5019,15 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         SmallVector<SourceLocation, 4> RemovalLocs;
         const DeclaratorChunk &Chunk = D.getTypeObject(I);
         assert(Chunk.Kind == DeclaratorChunk::Function);
+
         if (Chunk.Fun.hasRefQualifier())
           RemovalLocs.push_back(Chunk.Fun.getRefQualifierLoc());
-        if (Chunk.Fun.TypeQuals & Qualifiers::Const)
-          RemovalLocs.push_back(Chunk.Fun.getConstQualifierLoc());
-        if (Chunk.Fun.TypeQuals & Qualifiers::Volatile)
-          RemovalLocs.push_back(Chunk.Fun.getVolatileQualifierLoc());
-        if (Chunk.Fun.TypeQuals & Qualifiers::Restrict)
-          RemovalLocs.push_back(Chunk.Fun.getRestrictQualifierLoc());
+
+        if (Chunk.Fun.hasMethodTypeQualifiers())
+          Chunk.Fun.MethodQualifiers->forEachQualifier(
+              [&](DeclSpec::TQ TypeQual, StringRef QualName,
+                  SourceLocation SL) { RemovalLocs.push_back(SL); });
+
         if (!RemovalLocs.empty()) {
           llvm::sort(RemovalLocs,
                      BeforeThanCompare<SourceLocation>(S.getSourceManager()));
@@ -5001,7 +5043,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
 
       // Strip the cv-qualifiers and ref-qualifiers from the type.
       FunctionProtoType::ExtProtoInfo EPI = FnTy->getExtProtoInfo();
-      EPI.TypeQuals = 0;
+      EPI.TypeQuals.removeCVRQualifiers();
       EPI.RefQualifier = RQ_None;
 
       T = Context.getFunctionType(FnTy->getReturnType(), FnTy->getParamTypes(),
@@ -7201,7 +7243,10 @@ static void deduceOpenCLImplicitAddrSpace(TypeProcessingState &State,
        !IsPointee) ||
       // Do not deduce addr space of the void type, e.g. in f(void), otherwise
       // it will fail some sema check.
-      (T->isVoidType() && !IsPointee))
+      (T->isVoidType() && !IsPointee) ||
+      // Do not deduce address spaces for dependent types because they might end
+      // up instantiating to a type with an explicit address space qualifier.
+      T->isDependentType())
     return;
 
   LangAS ImpAddr = LangAS::Default;
@@ -7226,9 +7271,8 @@ static void deduceOpenCLImplicitAddrSpace(TypeProcessingState &State,
     if (IsPointee) {
       ImpAddr = LangAS::opencl_generic;
     } else {
-      if (D.getContext() == DeclaratorContext::TemplateArgContext ||
-          T->isDependentType()) {
-        // Do not deduce address space for non-pointee type in templates.
+      if (D.getContext() == DeclaratorContext::TemplateArgContext) {
+        // Do not deduce address space for non-pointee type in template arg.
       } else if (D.getContext() == DeclaratorContext::FileContext) {
         ImpAddr = LangAS::opencl_global;
       } else {
@@ -7269,6 +7313,9 @@ static void processTypeAttrs(TypeProcessingState &state, QualType &type,
   // sure we visit every element once. Copy the attributes list, and iterate
   // over that.
   ParsedAttributesView AttrsCopy{attrs};
+
+  state.setParsedNoDeref(false);
+
   for (ParsedAttr &attr : AttrsCopy) {
 
     // Skip attributes that were marked to be invalid.
@@ -7365,6 +7412,15 @@ static void processTypeAttrs(TypeProcessingState &state, QualType &type,
       if (TAL == TAL_DeclChunk)
         HandleLifetimeBoundAttr(state, type, attr);
       break;
+
+    case ParsedAttr::AT_NoDeref: {
+      ASTContext &Ctx = state.getSema().Context;
+      type = state.getAttributedType(createSimpleAttr<NoDerefAttr>(Ctx, attr),
+                                     type, type);
+      attr.setUsedAsTypeAttr();
+      state.setParsedNoDeref(true);
+      break;
+    }
 
     MS_TYPE_ATTRS_CASELIST:
       if (!handleMSPointerTypeQualifierAttr(state, attr, type))
@@ -7996,9 +8052,7 @@ QualType Sema::getElaboratedType(ElaboratedTypeKeyword Keyword,
 }
 
 QualType Sema::BuildTypeofExprType(Expr *E, SourceLocation Loc) {
-  ExprResult ER = CheckPlaceholderExpr(E);
-  if (ER.isInvalid()) return QualType();
-  E = ER.get();
+  assert(!E->hasPlaceholderType() && "unexpected placeholder");
 
   if (!getLangOpts().CPlusPlus && E->refersToBitField())
     Diag(E->getExprLoc(), diag::err_sizeof_alignof_typeof_bitfield) << 2;
@@ -8083,9 +8137,7 @@ static QualType getDecltypeForExpr(Sema &S, Expr *E) {
 
 QualType Sema::BuildDecltypeType(Expr *E, SourceLocation Loc,
                                  bool AsUnevaluated) {
-  ExprResult ER = CheckPlaceholderExpr(E);
-  if (ER.isInvalid()) return QualType();
-  E = ER.get();
+  assert(!E->hasPlaceholderType() && "unexpected placeholder");
 
   if (AsUnevaluated && CodeSynthesisContexts.empty() &&
       E->HasSideEffects(Context, false)) {

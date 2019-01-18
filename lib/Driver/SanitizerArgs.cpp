@@ -207,6 +207,8 @@ bool SanitizerArgs::needsUnwindTables() const {
   return Sanitizers.Mask & NeedsUnwindTables;
 }
 
+bool SanitizerArgs::needsLTO() const { return Sanitizers.Mask & NeedsLTO; }
+
 SanitizerArgs::SanitizerArgs(const ToolChain &TC,
                              const llvm::opt::ArgList &Args) {
   SanitizerMask AllRemove = 0;  // During the loop below, the accumulated set of
@@ -732,8 +734,25 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     AsanGlobalsDeadStripping =
         !TC.getTriple().isOSBinFormatELF() || TC.getTriple().isOSFuchsia() ||
         Args.hasArg(options::OPT_fsanitize_address_globals_dead_stripping);
+
+    AsanUseOdrIndicator =
+        Args.hasFlag(options::OPT_fsanitize_address_use_odr_indicator,
+                     options::OPT_fno_sanitize_address_use_odr_indicator,
+                     AsanUseOdrIndicator);
   } else {
     AsanUseAfterScope = false;
+  }
+
+  if (AllAddedKinds & HWAddress) {
+    if (Arg *HwasanAbiArg =
+            Args.getLastArg(options::OPT_fsanitize_hwaddress_abi_EQ)) {
+      HwasanAbi = HwasanAbiArg->getValue();
+      if (HwasanAbi != "platform" && HwasanAbi != "interceptor")
+        D.Diag(clang::diag::err_drv_invalid_value)
+            << HwasanAbiArg->getAsString(Args) << HwasanAbi;
+    } else {
+      HwasanAbi = "interceptor";
+    }
   }
 
   if (AllAddedKinds & SafeStack) {
@@ -904,6 +923,14 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
 
   if (AsanGlobalsDeadStripping)
     CmdArgs.push_back("-fsanitize-address-globals-dead-stripping");
+
+  if (AsanUseOdrIndicator)
+    CmdArgs.push_back("-fsanitize-address-use-odr-indicator");
+
+  if (!HwasanAbi.empty()) {
+    CmdArgs.push_back("-default-function-attr");
+    CmdArgs.push_back(Args.MakeArgString("hwasan-abi=" + HwasanAbi));
+  }
 
   // MSan: Workaround for PR16386.
   // ASan: This is mainly to help LSan with cases such as

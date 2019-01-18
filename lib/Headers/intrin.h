@@ -90,8 +90,6 @@ void __inwordstring(unsigned short, unsigned short *, unsigned long);
 void __lidt(void *);
 unsigned __int64 __ll_lshift(unsigned __int64, int);
 __int64 __ll_rshift(__int64, int);
-unsigned int __lzcnt(unsigned int);
-unsigned short __lzcnt16(unsigned short);
 static __inline__
 void __movsb(unsigned char *, unsigned char const *, size_t);
 static __inline__
@@ -219,7 +217,6 @@ void __incgsbyte(unsigned long);
 void __incgsdword(unsigned long);
 void __incgsqword(unsigned long);
 void __incgsword(unsigned long);
-unsigned __int64 __lzcnt64(unsigned __int64);
 static __inline__
 void __movsq(unsigned long long *, unsigned long long const *, size_t);
 static __inline__
@@ -552,6 +549,9 @@ static __inline__ void __DEFAULT_FN_ATTRS
 __halt(void) {
   __asm__ volatile ("hlt");
 }
+#endif
+
+#if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
 static __inline__ void __DEFAULT_FN_ATTRS
 __nop(void) {
   __asm__ volatile ("nop");
@@ -566,6 +566,16 @@ unsigned __int64 __getReg(int);
 long _InterlockedAdd(long volatile *Addend, long Value);
 int _ReadStatusReg(int);
 void _WriteStatusReg(int, int);
+
+static inline unsigned short _byteswap_ushort (unsigned short val) {
+  return __builtin_bswap16(val);
+}
+static inline unsigned long _byteswap_ulong (unsigned long val) {
+  return __builtin_bswap32(val);
+}
+static inline unsigned __int64 _byteswap_uint64 (unsigned __int64 val) {
+  return __builtin_bswap64(val);
+}
 #endif
 
 /*----------------------------------------------------------------------------*\
